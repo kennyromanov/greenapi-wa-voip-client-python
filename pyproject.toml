@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "greenapi-wa-voip-client"
+version = "0.1.0"
+description = "Python client for Green-API WhatsApp voice calls"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "aiortc>=1.15,<2",
+    "httpx>=0.28,<1",
+    "websockets>=17,<18",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=1.4,<2",
+]
+
+[tool.setuptools]
+packages = [
+    "greenapi_wa_voip_client",
+    "greenapi_wa_voip_client.lib",
+    "greenapi_wa_voip_client.rtc",
+]
+
+[tool.setuptools.package-dir]
+greenapi_wa_voip_client = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+addopts = "--strict-markers"
+markers = [
+    "contract: behavior copied from the TypeScript SDK",
+    "adaptation: deliberate Python adaptation or safety correction",
+    "integration: opt-in tests using real external services",
+]
