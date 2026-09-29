@@ -67,6 +67,7 @@ The parts worth reading first, in the order a call goes through them:
 | `src/calls_connection.py` | Call state, events, signaling, and audio bridge lifecycle |
 | `src/rtc/aiortc_bridge.py` | The `aiortc` peer connection and SDP/ICE conversion |
 | `src/rtc/audio.py` | Microphone source and speaker output |
+| `src/rtc/custom_audio.py` | Optional aiortc track input and remote frame sinks |
 
 Three things in there are not obvious from the API, and each can cause a silent failure if
 you get it wrong:
@@ -182,6 +183,71 @@ calls.addEventListener("end-call", on_end)
 
 The library tears the audio bridge down itself when a call ends. `await calls.close()` stops the bridge and closes the
 socket when you are done with calls altogether.
+
+### Supplying and receiving audio without system devices
+
+`connectCalls()` still uses the microphone and speaker when called without arguments. For a headless application,
+pass `audio_device_factory`: it must create a **new** device for each audio bridge. The library also calls it when it
+rebuilds the bridge after a WebSocket reconnect. A `TrackAudioDevice` takes an `aiortc` audio track as input and, by
+default, consumes remote audio without playing it. `FrameAudioSink` delivers decoded PyAV `AudioFrame` objects to a
+callback; this callback can be synchronous or async.
+
+```python
+from aiortc.contrib.media import MediaPlayer
+from greenapi_wa_voip_client import FrameAudioSink, GreenApiVoipClient, TrackAudioDevice
+import asyncio
+
+async def handle_remote_frame(frame):
+    # Decode has already happened. Convert sample format/rate with
+    # av.AudioResampler if the next consumer requires a specific PCM format.
+    print(frame.sample_rate, frame.samples, frame.format.name)
+
+def make_audio_device():
+    player = MediaPlayer("announcement.wav")  # Fresh player for every bridge.
+    if player.audio is None:
+        raise ValueError("File has no audio track")
+    return TrackAudioDevice(
+        lambda: player.audio,
+        sink_factory=lambda: FrameAudioSink(handle_remote_frame),
+    )
+
+async def main():
+    client = GreenApiVoipClient({
+        "idInstance": "your-id-instance",
+        "apiTokenInstance": "your-api-token-instance",
+        "apiUrl": "https://1234.api.green-api.com",
+    })
+
+    calls = client.connectCalls(audio_device_factory=make_audio_device)
+    connected = asyncio.Event()
+    ended = asyncio.Event()
+
+    calls.addEventListener("connect", lambda event: connected.set())
+    calls.addEventListener("end-call", lambda event: ended.set())
+
+    try:
+        await asyncio.wait_for(connected.wait(), timeout=20)
+        await client.dial("79991234567")
+        await calls.startAudioBridge()
+        await ended.wait()
+    finally:
+        await calls.close()
+
+asyncio.run(main())
+```
+
+The same `TrackAudioDevice` accepts a live custom `aiortc.AudioStreamTrack`: implement `async recv()` to produce
+PyAV audio frames, then pass its constructor as `track_factory`. A custom sink may be supplied instead of
+`FrameAudioSink`; a sink passed through `sink_factory` must provide `async attach(track)` and `async close()`.
+The default sink is `DiscardAudioSink`, so this path opens neither PortAudio nor an audio device. `sounddevice` remains
+a package dependency for the unchanged default mode.
+
+`FrameAudioSink` is the consumer of the remote track. Reading that same track independently from
+`remote-stream-ready` would split frames between consumers; use `aiortc.contrib.media.MediaRelay` if more than one
+consumer needs the audio. The callback receives frames in the format produced by aiortc; it is responsible for any
+resampling and for keeping up with real-time audio. `TrackAudioDevice.close()` stops the local track and closes the
+remote sink. End of a finite file does not hang up the server call. A custom track does not automatically implement
+the default microphone's `track.enabled = False` mute behavior; implement muting in the track if needed.
 
 ## Other examples
 
