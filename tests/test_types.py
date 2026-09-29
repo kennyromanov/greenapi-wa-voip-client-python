@@ -43,3 +43,13 @@ def test_idle_reason_keeps_unknown_server_word(target):
     types = target("types")
     state = types.CallState(state="idle", reason="rejected:custom-reason")
     assert state.reason == "rejected:custom-reason"
+
+
+@pytest.mark.contract
+def test_server_can_extend_call_info_without_breaking_known_fields(target):
+    types = target("types")
+    state = types.call_state_from_json({
+        "state": "inc-call",
+        "info": {"id": "call-1", "wid": "100@lid", "name": "Ada", "newServerField": "value"},
+    })
+    assert (state.info.id, state.info.wid, state.info.name) == ("call-1", "100@lid", "Ada")

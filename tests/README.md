@@ -1,7 +1,8 @@
 # Test-first contract
 
-The Python implementation is intentionally absent. Tests import target modules inside
-test functions so `pytest --collect-only` succeeds while the full suite remains red.
+The Python implementation follows the TypeScript SDK. Most tests inject fake
+network and media boundaries; `test_rtc_local.py` exercises two real aiortc
+peers without a Green-API account.
 
 ## Origin labels
 
@@ -37,12 +38,11 @@ new public exports:
 These seams keep the production flow readable. If implementation uses equivalent
 constructor names, adjust only the fixture plumbing, not the asserted behavior.
 
-## Red-suite workflow
+## Test workflow
 
-1. `python -m pytest --collect-only -q`: must collect all tests.
-2. Implement one source module and make its corresponding tests green.
-3. Keep `contract` and `adaptation` expectations distinguishable in reviews.
-4. Run `python -m pytest -q` after each vertical slice.
+1. `python -m pytest -q`: run the contract, adaptation, and local RTC tests.
+2. Keep `contract` and `adaptation` expectations distinguishable in reviews.
+3. A live Green-API test must independently verify ICE, DTLS, RTP, and audio.
 
 Fixtures in `tests/fixtures/calls_rtc/` contain synthetic identifiers. Real HAR,
 SDP, tokens, phone numbers, TURN credentials, and media must never be checked in.

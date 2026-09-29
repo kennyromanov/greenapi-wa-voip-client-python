@@ -1,5 +1,10 @@
-"""Public package entry point; future equivalent of TypeScript ``src/index.ts``.
+"""Public package entry point, equivalent to TypeScript src/index.ts."""
 
-The exports are intentionally absent until their modules are implemented. The
-contract tests in ``tests/test_public_api.py`` describe the required exports.
-"""
+from .types import CallInfo, CallState, CallStateKind, GreenApiVoipClientOptions
+from .green_api_voip_client import GreenApiVoipClient
+from .calls_connection import CallsConnection, CallsConnectionEventMap
+
+__all__ = [
+    "CallInfo", "CallState", "CallStateKind", "GreenApiVoipClientOptions",
+    "GreenApiVoipClient", "CallsConnection", "CallsConnectionEventMap",
+]
