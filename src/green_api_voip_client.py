@@ -31,5 +31,8 @@ class GreenApiVoipClient:
     async def hangUp(self) -> None:
         await self._rest.post("callsHangUp")
 
-    def connectCalls(self) -> CallsConnection:
-        return CallsConnection(self._rest)
+    def connectCalls(self, *, audio_device_factory=None) -> CallsConnection:
+        if audio_device_factory is None:
+            return CallsConnection(self._rest)
+
+        return CallsConnection(self._rest, audio_device_factory=audio_device_factory)

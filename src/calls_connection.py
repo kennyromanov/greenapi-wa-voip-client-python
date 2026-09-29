@@ -27,12 +27,13 @@ CallsConnectionEventMap = TypedDict("CallsConnectionEventMap", {
 
 
 class CallsConnection(EventTarget):
-    def __init__(self, rest, *, socket=None, bridge_factory=None, audio_factory=None):
+    def __init__(self, rest, *, socket=None, bridge_factory=None, audio_factory=None, audio_device_factory=None):
         super().__init__()
         self._rest = rest
         self._socket = socket if socket is not None else ReconnectingSocket(rest.buildWsUrl("callsRtc"))
         self._bridge_factory = bridge_factory
         self._audio_factory = audio_factory
+        self._audio_device_factory = audio_device_factory
         self._state: CallState | None = None
         self._peerConnection = None
         self._localStream = None
@@ -90,7 +91,9 @@ class CallsConnection(EventTarget):
     async def _startAudioBridgeInternal(self, generation: int) -> None:
         if self._audio_factory is None:
             from .rtc.audio import AudioDevice
-            self._audioDevice = AudioDevice()
+
+            factory = self._audio_device_factory or AudioDevice
+            self._audioDevice = factory()
             localStream = await self._audioDevice.acquireLocal()
         else:
             localStream = await self._audio_factory()
@@ -117,8 +120,9 @@ class CallsConnection(EventTarget):
 
         for track in localStream.getTracks():
             pc.addTrack(track, localStream)
+
         pc.addEventListener("icecandidate", self._onLocalCandidate)
-        pc.addEventListener("track", self._onRemoteTrack)
+        pc.addEventListener("track", lambda event: self._onRemoteTrack(event, generation, pc))
 
         offer = await pc.createOffer()
         if generation != self._bridgeGeneration:
@@ -144,14 +148,23 @@ class CallsConnection(EventTarget):
             candidate = candidate.toJSON()
         return self._socket.send({"type": "ice-candidate", "candidate": candidate})
 
-    def _onRemoteTrack(self, event) -> Any:
+    def _onRemoteTrack(self, event, generation: int, pc) -> Any:
+        if generation != self._bridgeGeneration or pc is not self._peerConnection:
+            return None
+
         value = event.detail
         stream = value.get("streams", [None])[0] if isinstance(value, dict) else value
         self.dispatchEvent(Event("remote-stream-ready", stream))
         if self._audioDevice is not None:
             track = value.get("track") if isinstance(value, dict) else None
             if track is not None:
-                return self._audioDevice.attachRemote(track)
+                audio = self._audioDevice
+
+                async def attach():
+                    if generation == self._bridgeGeneration and pc is self._peerConnection:
+                        await audio.attachRemote(track)
+
+                return attach()
         return None
 
     async def _teardownBridge(self, notifyServer: bool) -> None:
