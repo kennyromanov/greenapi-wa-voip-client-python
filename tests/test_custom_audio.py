@@ -193,6 +193,226 @@ async def test_track_device_and_frame_sink_use_aiortc_frames_without_hardware(ta
 
 @pytest.mark.adaptation
 @pytest.mark.asyncio
+async def test_track_device_creates_one_generation_pair_in_track_then_sink_order(target):
+    custom = target("rtc.custom_audio")
+    generation = 0
+    created = []
+    tracks = []
+    sinks = []
+
+    class Sink:
+        def __init__(self, value):
+            self.generation = value
+            self.remote = []
+            self.closes = 0
+
+        async def attach(self, track):
+            self.remote.append(track)
+
+        async def close(self):
+            self.closes += 1
+
+    def make_track():
+        nonlocal generation
+
+        generation += 1
+        created.append(("track", generation))
+
+        track = OneFrameTrack()
+
+        tracks.append(track)
+
+        return track
+
+    def make_sink():
+        created.append(("sink", generation))
+
+        sink = Sink(generation)
+
+        sinks.append(sink)
+
+        return sink
+
+    device = custom.TrackAudioDevice(make_track, sink_factory=make_sink)
+
+    assert created == []
+
+    # Direct users may attach a remote track before requesting the local one.
+    remote = OneFrameTrack()
+
+    await device.attachRemote(remote)
+
+    first = await device.acquireLocal()
+    second = await device.acquireLocal()
+
+    assert created == [("track", 1), ("sink", 1)]
+    assert first is second
+    assert first.getAudioTracks() == tracks
+    assert sinks[0].generation == generation == 1
+    assert sinks[0].remote == [remote]
+
+    await device.close()
+    await device.close()
+
+    assert tracks[0].readyState == "ended"
+    assert sinks[0].closes == 1
+
+
+@pytest.mark.adaptation
+@pytest.mark.asyncio
+async def test_track_device_close_before_acquisition_does_not_call_factories(target):
+    custom = target("rtc.custom_audio")
+    created = []
+
+    device = custom.TrackAudioDevice(
+        lambda: created.append("track") or OneFrameTrack(),
+        sink_factory=lambda: created.append("sink") or custom.DiscardAudioSink(),
+    )
+
+    await device.close()
+    await device.close()
+
+    assert created == []
+
+    with pytest.raises(RuntimeError, match="closed"):
+        await device.acquireLocal()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        await device.attachRemote(OneFrameTrack())
+
+    assert created == []
+
+
+@pytest.mark.adaptation
+@pytest.mark.asyncio
+async def test_track_device_stops_new_track_when_sink_factory_fails(target):
+    custom = target("rtc.custom_audio")
+    track = OneFrameTrack()
+
+    def fail_sink():
+        raise ValueError("sink unavailable")
+
+    device = custom.TrackAudioDevice(lambda: track, sink_factory=fail_sink)
+
+    with pytest.raises(ValueError, match="sink unavailable"):
+        await device.acquireLocal()
+
+    assert track.readyState == "ended"
+
+    await device.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        await device.acquireLocal()
+
+
+@pytest.mark.adaptation
+@pytest.mark.asyncio
+async def test_track_device_close_waits_for_remote_attachment(target):
+    custom = target("rtc.custom_audio")
+    attached = asyncio.Event()
+    release = asyncio.Event()
+    track = OneFrameTrack()
+    closed = []
+
+    class SlowSink:
+        async def attach(self, remote):
+            attached.set()
+            await release.wait()
+
+        async def close(self):
+            closed.append(True)
+
+    device = custom.TrackAudioDevice(lambda: track, sink_factory=SlowSink)
+    attaching = asyncio.create_task(device.attachRemote(OneFrameTrack()))
+
+    await attached.wait()
+
+    closing = asyncio.create_task(device.close())
+
+    await asyncio.sleep(0)
+    assert not closing.done()
+
+    release.set()
+    await asyncio.gather(attaching, closing)
+
+    assert closed == [True]
+    assert track.readyState == "ended"
+
+
+@pytest.mark.adaptation
+@pytest.mark.asyncio
+async def test_track_device_pairs_new_generations_after_reconnect(target):
+    connection = target("calls_connection")
+    custom = target("rtc.custom_audio")
+    socket, rest, bridges = FakeSocket(), FakeRest(), FakeBridgeFactory()
+    generation = 0
+    made = []
+
+    class Sink:
+        def __init__(self, value):
+            self.generation = value
+            self.remote = []
+            self.frames = 0
+
+        async def attach(self, track):
+            self.remote.append(track)
+
+            if self.generation == generation:
+                await track.recv()
+                self.frames += 1
+
+        async def close(self):
+            pass
+
+    def make_audio_device():
+        def make_track():
+            nonlocal generation
+
+            generation += 1
+
+            return OneFrameTrack()
+
+        def make_sink():
+            sink = Sink(generation)
+
+            made.append(sink)
+
+            return sink
+
+        return custom.TrackAudioDevice(make_track, sink_factory=make_sink)
+
+    calls = connection.CallsConnection(
+        rest, socket=socket, bridge_factory=bridges,
+        audio_device_factory=make_audio_device,
+    )
+
+    await socket.receive({"type": "state", "state": {"state": "on-call"}})
+
+    first = asyncio.create_task(calls.startAudioBridge())
+
+    await until(lambda: bool(socket.sent))
+    await bridges.bridges[0].emit("track", {"track": OneFrameTrack(), "streams": [object()]})
+    await socket.receive({"type": "answer", "answer": {"type": "answer", "sdp": "v=0"}})
+
+    await first
+
+    assert made[0].generation == 1
+    assert len(made[0].remote) == 1
+    assert made[0].frames == 1
+
+    await socket.emit("disconnect", {"reason": "lost", "code": 1006, "permanent": False})
+    await socket.receive({"type": "state", "state": {"state": "on-call"}})
+    await until(lambda: len(bridges.bridges) == 2 and len(socket.sent) == 2)
+    await bridges.bridges[1].emit("track", {"track": OneFrameTrack(), "streams": [object()]})
+    await socket.receive({"type": "answer", "answer": {"type": "answer", "sdp": "v=0"}})
+    assert [sink.generation for sink in made] == [1, 2]
+    assert all(len(sink.remote) == 1 for sink in made)
+    assert [sink.frames for sink in made] == [1, 1]
+    await calls.close()
+
+
+@pytest.mark.adaptation
+@pytest.mark.asyncio
 async def test_frame_sink_closes_while_remote_recv_is_pending(target):
     custom = target("rtc.custom_audio")
     pending = asyncio.Event()
