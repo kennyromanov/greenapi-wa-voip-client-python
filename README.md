@@ -192,6 +192,26 @@ rebuilds the bridge after a WebSocket reconnect. A `TrackAudioDevice` takes an `
 default, consumes remote audio without playing it. `FrameAudioSink` delivers decoded PyAV `AudioFrame` objects to a
 callback; this callback can be synchronous or async.
 
+`TrackAudioDevice` stores `track_factory` and `sink_factory` without calling them in its constructor. The first
+`acquireLocal()` creates the local audio track, then the remote sink, once each. A direct `attachRemote()` before
+`acquireLocal()` initializes the same pair in that order. Later `acquireLocal()` calls return the same track. Closing an
+unused device does not invoke either factory. If sink creation fails, the newly created track is stopped.
+
+This matters when both factories use one session or generation counter:
+
+```python
+def make_audio_device():
+    return TrackAudioDevice(
+        voice.new_output_track,   # Updates voice.generation first.
+        sink_factory=voice.new_input_sink,  # Captures that generation.
+    )
+```
+
+This is a change to the custom audio API: code that relied on `sink_factory()` running during `TrackAudioDevice(...)`
+construction must move that work to the first acquisition or create the related objects explicitly in
+`audio_device_factory`. `TrackAudioDevice` implements the audio device methods directly and no longer inherits from
+`AudioDevice`. The default `connectCalls()` mode still uses `AudioDevice`.
+
 ```python
 from aiortc.contrib.media import MediaPlayer
 from greenapi_wa_voip_client import FrameAudioSink, GreenApiVoipClient, TrackAudioDevice
